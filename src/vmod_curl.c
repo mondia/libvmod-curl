@@ -4,6 +4,8 @@
 #include <stddef.h>
 #include <string.h>
 #include <pthread.h>
+#include <syslog.h>
+#include <signal.h>
 
 #include "vrt.h"
 #include "vsb.h"
@@ -146,6 +148,16 @@ static struct vmod_curl* cm_get(const struct vrt_ctx *ctx) {
 	return cm;
 }
 
+void
+vmod_ch_sighandler(int i){
+	VAS_Fail(__func__,
+	     __FILE__,
+    	     __LINE__,
+    	     "You asked for it",
+    	     errno,
+    	     0);
+}
+
 int
 init_function(struct vmod_priv *priv, const struct VCL_conf *conf)
 {
@@ -167,6 +179,7 @@ init_function(struct vmod_priv *priv, const struct VCL_conf *conf)
 		vmod_curl_list[i] = malloc(sizeof(struct vmod_curl));
 		cm_init(vmod_curl_list[i]);
 	}
+	//signal(SIGSEGV,vmod_ch_sighandler);
 	return (curl_global_init(CURL_GLOBAL_ALL));
 }
 
@@ -239,6 +252,7 @@ static void cm_free(void *arg) {
 	    free(c->ws->s);
 	}
 	c->ws = NULL;
+	syslog(LOG_INFO, "Free cm_free OK");
     }
 }
 
@@ -273,10 +287,12 @@ static void* cm_perform_sync(struct vmod_curl *c) {
 	curl_easy_setopt(curl_handle, CURLOPT_URL, c->url);
 	curl_easy_setopt(curl_handle, CURLOPT_NOSIGNAL , 1L);
 	curl_easy_setopt(curl_handle, CURLOPT_NOPROGRESS, 1L);
-	curl_easy_setopt(curl_handle, CURLOPT_WRITEFUNCTION, recv_data);
-	curl_easy_setopt(curl_handle, CURLOPT_WRITEDATA, c);
-	curl_easy_setopt(curl_handle, CURLOPT_HEADERFUNCTION, recv_hdrs);
-	curl_easy_setopt(curl_handle, CURLOPT_HEADERDATA, c);
+	if (!c->async) {
+	    curl_easy_setopt(curl_handle, CURLOPT_WRITEFUNCTION, recv_data);
+	    curl_easy_setopt(curl_handle, CURLOPT_WRITEDATA, c);
+	    curl_easy_setopt(curl_handle, CURLOPT_HEADERFUNCTION, recv_hdrs);
+	    curl_easy_setopt(curl_handle, CURLOPT_HEADERDATA, c);
+	}
 	if(c->proxy) {
 		curl_easy_setopt(curl_handle, CURLOPT_PROXY, c->proxy);
 	}
@@ -341,7 +357,6 @@ static struct vmod_curl* cm_clone(struct vmod_curl *src, struct ws *aws) {
 	struct vmod_curl* target;
 	struct req_hdr *rh;
 	struct req_hdr *rh_clone;
-	
 	target = WS_Alloc(aws, sizeof(struct vmod_curl));
 	if (target == NULL) {
 	    return NULL;
@@ -362,12 +377,14 @@ static struct vmod_curl* cm_clone(struct vmod_curl *src, struct ws *aws) {
 
 	target->url = WS_Copy(target->ws, src->url, strlen(src->url) + 1);
 	if (target->url == NULL) {
+	    syslog(LOG_INFO, "Clone error: %s", "target->url");
 	    cm_free(target);
 	    return NULL;
 	}
 
 	target->method = WS_Copy(target->ws, src->method, strlen(src->method) + 1);
 	if (target->method == NULL) {
+	    syslog(LOG_INFO, "Clone error: %s", "target->method");
 	    cm_free(target);
 	    return NULL;
 	}
@@ -375,6 +392,7 @@ static struct vmod_curl* cm_clone(struct vmod_curl *src, struct ws *aws) {
 	if (src->postfields) {
 	    target->postfields = WS_Copy(target->ws, src->postfields, strlen(src->postfields) + 1);
 	    if (target->postfields == NULL) {
+		syslog(LOG_INFO, "Clone error: %s", "target->postfields");
 		cm_free(target);
 		return NULL;
 	    }	   
@@ -382,6 +400,7 @@ static struct vmod_curl* cm_clone(struct vmod_curl *src, struct ws *aws) {
 	if (src->cafile) {
 	    target->cafile = WS_Copy(target->ws, src->cafile, strlen(src->cafile) + 1);
 	    if (target->cafile == NULL) {
+		syslog(LOG_INFO, "Clone error: %s", "target->cafile");
 		cm_free(target);
 		return NULL;
 	    }	   
@@ -389,6 +408,7 @@ static struct vmod_curl* cm_clone(struct vmod_curl *src, struct ws *aws) {
 	if (src->capath) {
 	    target->capath = WS_Copy(target->ws, src->capath, strlen(src->capath) + 1);
 	    if (target->capath == NULL) {
+		syslog(LOG_INFO, "Clone error: %s", "target->capath");
 		cm_free(target);
 		return NULL;
 	    }	   
@@ -396,6 +416,7 @@ static struct vmod_curl* cm_clone(struct vmod_curl *src, struct ws *aws) {
 	if (src->proxy) {
 	    target->proxy = WS_Copy(target->ws, src->proxy, strlen(src->proxy) + 1);
 	    if (target->proxy == NULL) {
+		syslog(LOG_INFO, "Clone error: %s", "target->proxy");
 		cm_free(target);
 		return NULL;
 	    }	   
@@ -410,12 +431,16 @@ static struct vmod_curl* cm_clone(struct vmod_curl *src, struct ws *aws) {
 	    	rh_clone = (struct req_hdr*) WS_Alloc(target->ws, sizeof(struct req_hdr));
 		if (rh_clone == NULL) {
 		    cm_free(target);
+		    syslog(LOG_INFO, "Clone error: %s", "rh_clone");
 		    return NULL;
 		}
 		rh_clone->value = WS_Copy(target->ws, rh->value, strlen(rh->value) + 1);
 		if (rh_clone->value == NULL) {
+		    syslog(LOG_INFO, "Clone error: %s: %s, len=%d, ws(free)=%d", "rh_clone->value", rh->value, strlen(rh->value), target->ws->e - target->ws->f);
 		    cm_free(target);
 		    return NULL;
+		} else {
+		    //syslog(LOG_INFO, "Clone req header: %s: %s, len=%d", rh->value, rh_clone->value, strlen(rh_clone->value));
 		}	   
 		VTAILQ_INSERT_HEAD(&target->req_headers, rh_clone, list);
 	    }
@@ -431,13 +456,13 @@ static void* cm_worker(struct worker* wrk, void *priv) {
 	CAST_OBJ_NOTNULL(c, priv, VMOD_CURL_MAGIC);
 	AN(c);
         cm_perform_sync(c);
-        cm_clear(c);
+        // cm_clear(c);
 	pthread_exit(0);
 }
 
 // counts the allocated size (incl. the member pointers allocation)
-static unsigned cm_size(struct vmod_curl *c) {
-	unsigned result;
+static size_t cm_size(struct vmod_curl *c) {
+	size_t result;
 	struct req_hdr *rh;
 
 	result = sizeof(struct vmod_curl);
@@ -464,6 +489,8 @@ static unsigned cm_size(struct vmod_curl *c) {
 	if (c->body) {
 	    result += VSB_len(c->body) + 1;
 	}
+	result += sizeof(VTAILQ_HEAD(,req_hdr));
+	result += sizeof(VTAILQ_HEAD(,hdr));
 	if (!VTAILQ_EMPTY(&c->req_headers)) {
 	    VTAILQ_FOREACH(rh, &c->req_headers, list) {
 		if (rh) {
@@ -475,7 +502,13 @@ static unsigned cm_size(struct vmod_curl *c) {
 	    }
 	}		
 	result += sizeof(struct ws);
-	return (1 + result/64) * 64;
+	syslog(LOG_INFO, "WS length: %d", result);
+	result /= 64L;
+	result += 1L;
+	result *= 64L;
+	syslog(LOG_INFO, "WS aligned length: %d", result);
+	//syslog(LOG_INFO, "WS aligned length: %d", (1 + result/64) * 64);
+	return result; //(1L + result/64L) * 64L;
 }
 
 static void cm_perform(struct vmod_curl *c) {
@@ -484,8 +517,11 @@ static void cm_perform(struct vmod_curl *c) {
 	struct ws aws;
 	unsigned alloc_size;
 	if (c->async) {
+		syslog(LOG_INFO, "Trying ASYNC");
 		alloc_size = cm_size(c);
+		syslog(LOG_INFO, "Malloc: %d", alloc_size);
 		aws.s = malloc(alloc_size);
+		syslog(LOG_INFO, "Malloc OK: %d", alloc_size);
 		if (aws.s) {
 		    WS_Init(&aws, "bth", aws.s, alloc_size);
 		    c1 = cm_clone(c, &aws);
@@ -497,13 +533,18 @@ static void cm_perform(struct vmod_curl *c) {
 			    return;
 			}
 			// thread didn't start, so clean up the clone
+			syslog(LOG_INFO, "Free c1 directly: %d", alloc_size);
 			cm_free(c1);
+			syslog(LOG_INFO, "Free c1 directly OK: %d", alloc_size);
 		    } else {
 			// clone hasn't been created so cleanup workspace mem directly
+			syslog(LOG_INFO, "Free aws.s directly: %d", alloc_size);
 			free(aws.s);
+			syslog(LOG_INFO, "Free aws.s directly OK: %d", alloc_size);
 		    }
 		}
 	} 
+	syslog(LOG_INFO, "Performing SYNC");
 	c->async = 0;
 	cm_perform_sync(c);
 }
