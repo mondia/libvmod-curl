@@ -914,11 +914,11 @@ static void mcode_or_die(const char *where, CURLMcode code)
       default: s="CURLM_unknown";
         break;
     case     CURLM_BAD_SOCKET:         s="CURLM_BAD_SOCKET";
-      fprintf(MSG_OUT, "ERROR: %s returns %s\n", where, s);
+      fprintf(MSG_OUT, "ERROR: %s returns %s\n code: %d", where, s, code);
       /* ignore this error */ 
       return;
     }
-    fprintf(MSG_OUT, "ERROR: %s returns %s\n", where, s);
+    fprintf(MSG_OUT, "ERROR: %s returns %s\n code: %d", where, s, code);
     exit(code);
   }
 }
