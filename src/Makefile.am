@@ -3,7 +3,7 @@ AM_CPPFLAGS = @VMOD_INCLUDES@
 vmoddir = @VMOD_DIR@
 vmod_LTLIBRARIES = libvmod_curl.la
 
-libvmod_curl_la_CFLAGS = @CURL_CFLAGS@
+libvmod_curl_la_CFLAGS = @CURL_CFLAGS@ -levent -lpthread -levent_pthreads
 libvmod_curl_la_LDFLAGS = -module -export-dynamic -avoid-version @CURL_LIBS@
 
 libvmod_curl_la_SOURCES = \
