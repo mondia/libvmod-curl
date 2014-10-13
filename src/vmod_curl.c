@@ -393,7 +393,8 @@ libuv_create_socket_context(curl_socket_t sockfd)
 {
 	struct socket_context *context;
 
-	context = malloc(sizeof (struct socket_context));
+	context = malloc(sizeof (*context));
+	AN(context);
 	context->magic = VMOD_SOCKET_CONTEXT_MAGIC;
 
 	context->sockfd = sockfd;
@@ -437,8 +438,10 @@ multi_check_easy_transfers(void)
 				if (ctx->c) {
 					curl_easy_getinfo(message->easy_handle,
 						CURLINFO_RESPONSE_CODE, &ctx->c->status);
-					if (message->data.result != 0)
+					if (message->data.result != 0) {
 						ctx->c->error = curl_easy_strerror(message->data.result);
+						ctx->c->status = 0;
+					}
 					VSB_finish(ctx->c->body);
 					ctx->c->method = NULL;
 				}
