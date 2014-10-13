@@ -89,6 +89,8 @@ static void cm_clear(struct vmod_curl *c);
 
 static void start_event_loop(void);
 
+static void cm_wait(struct vmod_curl *c);
+
 static void
 cm_init(struct vmod_curl *c)
 {
@@ -196,6 +198,7 @@ cm_get(const struct vrt_ctx *ctx)
 		cm->vxid = ctx->req->sp->vxid;
 	}
 	AZ(pthread_mutex_unlock(&cl_mtx));
+	cm_wait(cm);
 	return (cm);
 }
 
@@ -232,7 +235,6 @@ recv_data(void *ptr, size_t size, size_t nmemb, void *s)
 	CAST_OBJ_NOTNULL(vc, s, VMOD_CURL_MAGIC);
 
 	VSB_bcat(vc->body, ptr, size * nmemb);
-	VSB_finish(vc->body);
 	return (size * nmemb);
 }
 
@@ -372,6 +374,7 @@ cm_perform(struct vmod_curl *c)
 	cm_clear_req_headers(c);
 
 	if (c->no_wait) {
+		VSB_finish(c->body);
 		pthread_mutex_lock(&c->mtx);
 		c->performing = 0;
 		pthread_cond_signal(&c->cond);
@@ -435,6 +438,7 @@ multi_check_easy_transfers(void)
 						CURLINFO_RESPONSE_CODE, &ctx->c->status);
 					if (message->data.result != 0)
 						ctx->c->error = curl_easy_strerror(message->data.result);
+					VSB_finish(ctx->c->body);
 				}
 				curl_multi_remove_handle(multi_handle, message->easy_handle);
 				if (ctx->req_headers)
@@ -588,21 +592,10 @@ start_event_loop(void)
 static void
 cm_perform_async(struct vmod_curl *c)
 {
-	/* 	The ctx->req can finish faster than
-		detached ('no_wait') easy curl transfer
-		initialized within this req.
-		That's why we sync 'vmod_curl' instances reusage. */
-	pthread_mutex_lock(&c->mtx);
-	while (c->performing) {
-		pthread_cond_wait(&c->cond, &c->mtx);
-	}
-	c->performing = 1;
-	pthread_mutex_unlock(&c->mtx);
-
 	/* NOTE: uv_async_send call needs to be
 	   synchronized, otherwise, especially in high load conditions
 	   events can cumulate and the callback can be called
-	   only once for them.
+	   only once per such a cumulated group.
 	   See: http://nikhilm.github.io/uvbook/threads.html#inter-thread-communication
 	*/
 	pthread_mutex_lock(&gl_mtx);
@@ -639,6 +632,7 @@ vmod_get(const struct vrt_ctx *ctx, VCL_STRING url)
 {
 	struct vmod_curl *c;
 	c = cm_get(ctx);
+	c->performing = 1;
 	cm_clear_fetch_state(c);
 	c->url = url;
 	c->flags |= F_METHOD_GET;
@@ -650,6 +644,7 @@ vmod_head(const struct vrt_ctx *ctx, VCL_STRING url)
 {
 	struct vmod_curl *c;
 	c = cm_get(ctx);
+	c->performing = 1;
 	cm_clear_fetch_state(c);
 	c->url = url;
 	c->flags |= F_METHOD_HEAD;
@@ -661,6 +656,7 @@ vmod_post(const struct vrt_ctx *ctx, VCL_STRING url, VCL_STRING postfields)
 {
 	struct vmod_curl *c;
 	c = cm_get(ctx);
+	c->performing = 1;
 	cm_clear_fetch_state(c);
 	c->url = url;
 	c->flags |= F_METHOD_POST;
@@ -675,7 +671,6 @@ vmod_status(const struct vrt_ctx *ctx)
 	c = cm_get(ctx);
 	if (c->no_wait)
 		return 0;
-	cm_wait(c);
 	return (c->status);
 }
 
@@ -684,7 +679,6 @@ vmod_free(const struct vrt_ctx *ctx)
 {
 	struct vmod_curl *c;
 	c = cm_get(ctx);
-	cm_wait(c);
 	cm_clear(c);
 }
 
@@ -693,7 +687,6 @@ vmod_error(const struct vrt_ctx *ctx)
 {
 	struct vmod_curl *c;
 	c = cm_get(ctx);
-	cm_wait(c);
 	if (c->status != 0 || c->no_wait)
 		return (NULL);
 	return (c->error);
@@ -707,7 +700,6 @@ vmod_header(const struct vrt_ctx *ctx, VCL_STRING header)
 	struct vmod_curl *c;
 
 	c = cm_get(ctx);
-	cm_wait(c);
 
 	if (c->status == 0 || c->no_wait)
 		return (NULL);
@@ -726,7 +718,6 @@ vmod_body(const struct vrt_ctx *ctx)
 {
 	struct vmod_curl *c;
 	c = cm_get(ctx);
-	cm_wait(c);
 	if (c->status == 0 || c->no_wait)
 		return (NULL);
 	return (VSB_data(c->body));
