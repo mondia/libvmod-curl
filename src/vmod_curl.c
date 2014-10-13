@@ -375,6 +375,7 @@ cm_perform(struct vmod_curl *c)
 
 	if (c->no_wait) {
 		VSB_finish(c->body);
+		c->method = NULL;
 		pthread_mutex_lock(&c->mtx);
 		c->performing = 0;
 		pthread_cond_signal(&c->cond);
@@ -439,6 +440,7 @@ multi_check_easy_transfers(void)
 					if (message->data.result != 0)
 						ctx->c->error = curl_easy_strerror(message->data.result);
 					VSB_finish(ctx->c->body);
+					ctx->c->method = NULL;
 				}
 				curl_multi_remove_handle(multi_handle, message->easy_handle);
 				if (ctx->req_headers)
