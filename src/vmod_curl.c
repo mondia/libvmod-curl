@@ -89,8 +89,6 @@ static void cm_clear(struct vmod_curl *c);
 
 static void start_event_loop(void);
 
-static void cm_wait(struct vmod_curl *c);
-
 static void
 cm_init(struct vmod_curl *c)
 {
@@ -173,7 +171,7 @@ cm_clear(struct vmod_curl *c)
 }
 
 static struct vmod_curl *
-cm_get(const struct vrt_ctx *ctx)
+cm_get_reserve(const struct vrt_ctx *ctx, int reserve_for_call)
 {
 	struct vmod_curl *cm;
 
@@ -198,8 +196,29 @@ cm_get(const struct vrt_ctx *ctx)
 		cm->vxid = ctx->req->sp->vxid;
 	}
 	AZ(pthread_mutex_unlock(&cl_mtx));
-	cm_wait(cm);
+	/*	Following sync block affects only this 'cm' instance.
+		It's necessary because the request, which previously
+		used this 'cm' (vmod_curl) instance could finish
+		faster then the curl easy preparation
+		in the 'no_wait' mode, and this 'cm' instance
+		could be reused by current request while still
+		not ready for that.
+	*/
+	pthread_mutex_lock(&cm->mtx);
+	while (cm->performing) {
+		pthread_cond_wait(&cm->cond, &cm->mtx);
+	}
+	if (reserve_for_call) {
+		cm_clear_fetch_state(cm);
+		cm->performing = 1;
+	}
+	pthread_mutex_unlock(&cm->mtx);
 	return (cm);
+}
+
+static struct vmod_curl *
+cm_get(const struct vrt_ctx *ctx) {
+	return cm_get_reserve(ctx, 0);
 }
 
 int
@@ -613,17 +632,6 @@ cm_perform_async(struct vmod_curl *c)
 	pthread_mutex_unlock(&gl_mtx);
 }
 
-/*waits for the easy curl call (performed via multi) to finish its task*/
-static void
-cm_wait(struct vmod_curl *c)
-{
-	pthread_mutex_lock(&c->mtx);
-	while (c->performing) {
-		pthread_cond_wait(&c->cond, &c->mtx);
-	}
-	pthread_mutex_unlock(&c->mtx);
-}
-
 /*============= EOF CURL MULTI ==========*/
 
 VCL_VOID
@@ -636,9 +644,7 @@ VCL_VOID
 vmod_get(const struct vrt_ctx *ctx, VCL_STRING url)
 {
 	struct vmod_curl *c;
-	c = cm_get(ctx);
-	c->performing = 1;
-	cm_clear_fetch_state(c);
+	c = cm_get_reserve(ctx, 1);
 	c->url = url;
 	c->flags |= F_METHOD_GET;
 	cm_perform_async(c);
@@ -648,9 +654,7 @@ VCL_VOID
 vmod_head(const struct vrt_ctx *ctx, VCL_STRING url)
 {
 	struct vmod_curl *c;
-	c = cm_get(ctx);
-	c->performing = 1;
-	cm_clear_fetch_state(c);
+	c = cm_get_reserve(ctx, 1);
 	c->url = url;
 	c->flags |= F_METHOD_HEAD;
 	cm_perform_async(c);
@@ -660,9 +664,7 @@ VCL_VOID
 vmod_post(const struct vrt_ctx *ctx, VCL_STRING url, VCL_STRING postfields)
 {
 	struct vmod_curl *c;
-	c = cm_get(ctx);
-	c->performing = 1;
-	cm_clear_fetch_state(c);
+	c = cm_get_reserve(ctx, 1);
 	c->url = url;
 	c->flags |= F_METHOD_POST;
 	c->postfields = postfields;
