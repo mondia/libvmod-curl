@@ -412,9 +412,8 @@ libuv_create_socket_context(curl_socket_t sockfd)
 {
 	struct socket_context *context;
 
-	context = malloc(sizeof (*context));
-	AN(context);
-	context->magic = VMOD_SOCKET_CONTEXT_MAGIC;
+	ALLOC_OBJ(context, VMOD_SOCKET_CONTEXT_MAGIC);
+	CHECK_OBJ_NOTNULL(context, VMOD_SOCKET_CONTEXT_MAGIC);
 
 	context->sockfd = sockfd;
 
@@ -427,9 +426,7 @@ libuv_create_socket_context(curl_socket_t sockfd)
 static void
 libuv_socket_close_cb(uv_handle_t *handle)
 {
-	struct socket_context* context;
-	CAST_OBJ_NOTNULL(context, handle->data, VMOD_SOCKET_CONTEXT_MAGIC);
-	free(context);
+	FREE_OBJ((struct socket_context*) handle->data);
 }
 
 static void
@@ -527,7 +524,7 @@ multi_timeout_cb(CURLM *multi, long timeout_ms, void *userp)
 {
 	if (timeout_ms <= 0)
 		timeout_ms = 1;
-	uv_timer_start(&timeout, libuv_timeout_cb, timeout_ms, 0);
+	uv_timer_start(&timeout, (uv_timer_cb) libuv_timeout_cb, timeout_ms, 0);
 }
 
 /*curl multi socket callback*/
