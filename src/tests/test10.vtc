@@ -1,0 +1,49 @@
+varnishtest "Test 'fire & forget'"
+
+server s1 {
+	rxreq
+	txresp
+	accept
+	rxreq
+	expect req.method == "POST"
+	expect req.url == "/curl"
+	expect req.http.Content-Type == "text/plain"
+	expect req.bodylen == 9
+	txresp
+} -start
+
+varnish v1 -vcl+backend {
+	import std;
+	import curl from "${vmod_topbuild}/src/.libs/libvmod_curl.so";
+
+	sub vcl_recv {
+		curl.set_no_wait(1);
+		curl.header_add("Content-Type: text/plain");
+		curl.post("http://${s1_addr}:${s1_port}/curl", "TEST_BODY");
+		std.timestamp("some_operation");
+		return(pass);
+	}
+
+	sub vcl_deliver {
+		set resp.http.x-status = curl.status();
+		curl.free();
+		std.timestamp("curl_task_finished");
+	}
+
+} -start
+
+logexpect l1 -v v1 -g request {
+	expect	* 1001	Timestamp	{some_operation: \S+ 0\.\d+ 0\.\d+}
+	expect	* = 	Timestamp	{curl_task_finished: \S+ 0\.\d+ 0\.\d+}
+} -start
+
+client c1 {
+	txreq -url "/"
+	rxresp
+	expect resp.http.x-status == 0
+} -run
+
+logexpect l1 -wait
+
+# let the s1 finish curl req processing
+delay 0.1

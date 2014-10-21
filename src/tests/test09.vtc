@@ -1,0 +1,43 @@
+varnishtest "Test asynchronous capability"
+
+server s1 {
+	rxreq
+	txresp
+	accept
+	rxreq
+	delay 1
+	txresp -hdr "Foo: bar"
+} -start
+
+varnish v1 -vcl+backend {
+	import std;
+	import curl from "${vmod_topbuild}/src/.libs/libvmod_curl.so";
+
+	sub vcl_recv {
+		curl.get("http://${s1_addr}:${s1_port}/curl");
+		std.timestamp("some_operation");
+		return(pass);
+	}
+
+	sub vcl_deliver {
+		set resp.http.x-status = curl.status();
+		set resp.http.x-header = curl.header("Foo");
+		curl.free();
+		std.timestamp("curl_task_finished");
+	}
+
+} -start
+
+logexpect l1 -v v1 -g request {
+	expect	* 1001	Timestamp	{some_operation: \S+ 0\.\d+ 0\.\d+}
+	expect	* = 	Timestamp	{curl_task_finished: \S+ 1\.\d+ 1\.\d+}
+} -start
+
+client c1 {
+	txreq -url "/"
+	rxresp
+	expect resp.http.x-status == 200
+	expect resp.http.x-header == "bar"
+} -run
+
+logexpect l1 -wait
