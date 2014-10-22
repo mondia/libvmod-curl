@@ -97,8 +97,8 @@ cm_init(struct vmod_curl *c)
 	VTAILQ_INIT(&c->req_headers);
 	c->body = VSB_new_auto();
 	cm_clear(c);
-	pthread_mutex_init(&c->mtx, NULL);
-	pthread_cond_init(&c->cond, NULL);
+	AZ(pthread_mutex_init(&c->mtx, NULL));
+	AZ(pthread_cond_init(&c->cond, NULL));
 	c->performing = 0;
 	c->no_wait = 0;
 }
@@ -204,15 +204,15 @@ cm_get_reserve(const struct vrt_ctx *ctx, int reserve_for_call)
 		could be reused by current request while still
 		not ready for that.
 	*/
-	pthread_mutex_lock(&cm->mtx);
+	AZ(pthread_mutex_lock(&cm->mtx));
 	while (cm->performing) {
-		pthread_cond_wait(&cm->cond, &cm->mtx);
+		AZ(pthread_cond_wait(&cm->cond, &cm->mtx));
 	}
 	if (reserve_for_call) {
 		cm_clear_fetch_state(cm);
 		cm->performing = 1;
 	}
-	pthread_mutex_unlock(&cm->mtx);
+	AZ(pthread_mutex_unlock(&cm->mtx));
 	return (cm);
 }
 
@@ -307,12 +307,8 @@ cm_perform(struct vmod_curl *c)
 	struct curl_context *ctx;
 	struct req_hdr *rh;
 
-	ctx = calloc(1, sizeof(struct curl_context));
+	ALLOC_OBJ(ctx, VMOD_CURL_CONTEXT_MAGIC);
 	AN(ctx);
-
-	ctx->req_headers = NULL;
-	ctx->c = NULL;
-	ctx->magic = VMOD_CURL_CONTEXT_MAGIC;
 
 	curl_handle = curl_easy_init();
 	AN(curl_handle);
@@ -395,13 +391,13 @@ cm_perform(struct vmod_curl *c)
 	if (c->no_wait) {
 		VSB_finish(c->body);
 		c->method = NULL;
-		pthread_mutex_lock(&c->mtx);
+		AZ(pthread_mutex_lock(&c->mtx));
 		c->performing = 0;
-		pthread_cond_signal(&c->cond);
-		pthread_mutex_unlock(&c->mtx);
+		AZ(pthread_cond_signal(&c->cond));
+		AZ(pthread_mutex_unlock(&c->mtx));
 	}
 
-	curl_multi_add_handle(multi_handle, curl_handle);
+	AZ(curl_multi_add_handle(multi_handle, curl_handle));
 }
 
 /*============= CURL MULTI ==============*/
@@ -444,7 +440,6 @@ multi_check_easy_transfers(void)
 	CURLMsg *message;
 	int pending;
 	struct curl_context *ctx;
-
 	while ((message = curl_multi_info_read(multi_handle, &pending))) {
 		switch (message->msg) {
 			case CURLMSG_DONE:
@@ -452,8 +447,8 @@ multi_check_easy_transfers(void)
 					CURLINFO_PRIVATE, &ctx);
 				AN(ctx);
 				if (ctx->c) {
-					curl_easy_getinfo(message->easy_handle,
-						CURLINFO_RESPONSE_CODE, &ctx->c->status);
+					AZ(curl_easy_getinfo(message->easy_handle,
+						CURLINFO_RESPONSE_CODE, &ctx->c->status));
 					if (message->data.result != 0) {
 						ctx->c->error = curl_easy_strerror(message->data.result);
 						ctx->c->status = 0;
@@ -461,21 +456,18 @@ multi_check_easy_transfers(void)
 					VSB_finish(ctx->c->body);
 					ctx->c->method = NULL;
 				}
-				curl_multi_remove_handle(multi_handle, message->easy_handle);
+				AZ(curl_multi_remove_handle(multi_handle, message->easy_handle));
 				if (ctx->req_headers)
 					curl_slist_free_all(ctx->req_headers);
 				curl_easy_cleanup(message->easy_handle);
-
 				if (ctx->c) {
-					pthread_mutex_lock(&ctx->c->mtx);
+					AZ(pthread_mutex_lock(&ctx->c->mtx));
 					ctx->c->performing = 0;
-					pthread_cond_signal(&ctx->c->cond);
-					pthread_mutex_unlock(&ctx->c->mtx);
+					AZ(pthread_cond_signal(&ctx->c->cond));
+					AZ(pthread_mutex_unlock(&ctx->c->mtx));
 				}
-				free(ctx);
-
+				FREE_OBJ(ctx);
 				break;
-
 			default:
 				break;
 		}
@@ -572,10 +564,10 @@ libuv_async_cb(uv_async_t *handle, int status)
 
 	cm_perform(c);
 
-	pthread_mutex_lock(&gl_mtx);
+	AZ(pthread_mutex_lock(&gl_mtx));
 	callback_running = 0;
-	pthread_cond_signal(&gl_cond);
-	pthread_mutex_unlock(&gl_mtx);
+	AZ(pthread_cond_signal(&gl_cond));
+	AZ(pthread_mutex_unlock(&gl_mtx));
 }
 
 /*the pthread worker running the libuv loop*/
@@ -594,18 +586,19 @@ multi_curl_worker(void* ptr)
 
 	multi_handle = curl_multi_init();
 	AN(multi_handle);
-
-	curl_multi_setopt(multi_handle, CURLMOPT_SOCKETFUNCTION, multi_socket_cb);
-	curl_multi_setopt(multi_handle, CURLMOPT_TIMERFUNCTION, multi_timeout_cb);
-	uv_run(loop, UV_RUN_DEFAULT);
+	AZ(curl_multi_setopt(multi_handle, CURLMOPT_SOCKETFUNCTION, multi_socket_cb));
+	AZ(curl_multi_setopt(multi_handle, CURLMOPT_TIMERFUNCTION, multi_timeout_cb));
+	AZ(uv_run(loop, UV_RUN_DEFAULT));
 }
 
 /*starts the libuv event loop in a dedicated thread.*/
 static void
 start_event_loop(void)
 {
-	pthread_t loop_thread;
-	AZ(pthread_create(&loop_thread, NULL, &multi_curl_worker, NULL));
+	pthread_t loop_thread = NULL;
+	int result = INT_MAX;
+	AZ(pthread_create(&loop_thread, NULL, &multi_curl_worker, &result));
+	AN(loop_thread);
 }
 
 /*signals the loop thread to perform a new curl call
@@ -619,14 +612,14 @@ cm_perform_async(struct vmod_curl *c)
 	   only once per such a cumulated group.
 	   See: http://nikhilm.github.io/uvbook/threads.html#inter-thread-communication
 	*/
-	pthread_mutex_lock(&gl_mtx);
+	AZ(pthread_mutex_lock(&gl_mtx));
 	while (callback_running) {
-		pthread_cond_wait(&gl_cond, &gl_mtx);
+		AZ(pthread_cond_wait(&gl_cond, &gl_mtx));
 	}
 	callback_running = 1;
 	async.data = c;
 	uv_async_send(&async);
-	pthread_mutex_unlock(&gl_mtx);
+	AZ(pthread_mutex_unlock(&gl_mtx));
 }
 
 /*============= EOF CURL MULTI ==========*/
